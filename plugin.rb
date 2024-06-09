@@ -213,23 +213,38 @@ after_initialize do
         # either the topic is unprotected, or it is the first post number, or it is the user's own topic, or the users posts can be seen
         # @TODO this does not implement private_replies_topic_starter_primary_group_can_see_all
         def for_digest(user, since, opts = nil)
+          def DEBUG(msg)
+            Rails.logger.warn("DEBUG for_digest: #{msg}")
+            puts "DEBUG for_digest: #{msg}"
+          end
+
+          DEBUG 1
+
           topics = original_for_digest(user, since, opts)
+
+          DEBUG 2
+
           # check if we are actually joining on posts, we are for MLM summary but we are not for digest
           if SiteSetting.private_replies_enabled &&
                !DiscoursePrivateReplies.can_see_all_posts?(user, nil) &&
                topics.to_sql.include?('INNER JOIN "posts"')
+            DEBUG 3
             userid_list = DiscoursePrivateReplies.can_see_post_if_author_among(user, nil).join(",")
+            DEBUG 4
             protected_topic_list =
               TopicCustomField
                 .where(name: "private_replies")
                 .where(value: true)
                 .pluck(:topic_id)
                 .join(",")
+            DEBUG 5
             topics =
               topics.where(
                 "(topics.id NOT IN (#{protected_topic_list}) OR posts.post_number = 1 OR topics.user_id = #{user.id} OR posts.user_id IN (#{userid_list}))",
               )
+            DEBUG 6
           end
+          DEBUG 7
           topics
         end
       end
