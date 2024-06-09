@@ -45,7 +45,7 @@ module ::DiscoursePrivateReplies
       .each { |g| userids += g.users.pluck(:id) }
     userids = userids + [topic.user.id] if topic
     userids = userids + [user.id] if user && !user.anonymous? # anonymous users don't have the id method
-    return userids.uniq
+    userids.uniq
   end
 end
 
