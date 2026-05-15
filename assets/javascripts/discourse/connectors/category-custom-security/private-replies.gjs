@@ -7,6 +7,10 @@ import { service } from "@ember/service";
 import { i18n } from "discourse-i18n";
 
 export default class PrivateReplies extends Component {
+    static shouldRender(args, context) {
+        return !context.siteSettings.enable_simplified_category_creation;
+    }
+
     @service siteSettings;
 
     @tracked
