@@ -47,6 +47,29 @@ describe TopicView do
     end
   end
 
+  describe '#filter_posts_by_ids' do
+    it 'hides posts from users the viewer may not see' do
+      restricted_post = topic.posts.find_by(user_id: restricted_user.id)
+      topic_view = TopicView.new(topic, user)
+
+      expect(topic_view.filter_posts_by_ids([restricted_post.id]).count).to eq(0)
+    end
+
+    it 'shows posts from users the viewer may see' do
+      allowed_post = topic.posts.find_by(user_id: allowed_user.id)
+      topic_view = TopicView.new(topic, user)
+
+      expect(topic_view.filter_posts_by_ids([allowed_post.id]).count).to eq(1)
+    end
+
+    it 'shows all posts to the topic owner' do
+      restricted_post = topic.posts.find_by(user_id: restricted_user.id)
+      topic_view = TopicView.new(topic, topic_owner)
+
+      expect(topic_view.filter_posts_by_ids([restricted_post.id]).count).to eq(1)
+    end
+  end
+
   describe '#participants' do
     it 'filters participants for restricted users' do
       topic_view = TopicView.new(topic, user)

@@ -118,4 +118,39 @@ RSpec.describe Search do
       expect(results.posts.map(&:id)).to include(@topic3_first_post.id)
     end
   end
+
+  context 'when an anonymous visitor searches' do
+    before do
+      SiteSetting.private_replies_enabled = true
+    end
+
+    it 'does not raise an error on protected topics' do
+      search = Search.new("searchable", guardian: Guardian.new(nil))
+      expect { search.execute }.not_to raise_error
+    end
+
+    it 'hides replies from users that anonymous visitors may not see' do
+      search = Search.new("searchable", guardian: Guardian.new(nil))
+      results = search.execute
+
+      post_ids = results.posts.map(&:id)
+      expect(post_ids).not_to include(@topic3_reply_by_restricted.id)
+      expect(post_ids).to include(@topic1_reply_by_owner.id)
+    end
+  end
+
+  context 'when the protected flag is not stored as "t"' do
+    before do
+      SiteSetting.private_replies_enabled = true
+      # e.g. written through the API or a rails console instead of the plugin
+      TopicCustomField.find_by(topic_id: topic3.id, name: 'private_replies').update!(value: 'true')
+    end
+
+    it 'still hides replies from users the viewer may not see' do
+      search = Search.new("searchable", guardian: Guardian.new(user))
+      results = search.execute
+
+      expect(results.posts.map(&:id)).not_to include(@topic3_reply_by_restricted.id)
+    end
+  end
 end

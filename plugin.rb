@@ -1,6 +1,8 @@
+# frozen_string_literal: true
+
 # name: discourse-private-replies
 # about: Communiteq private replies plugin
-# version: 2026.4
+# version: 2026.4.1
 # authors: Communiteq
 # url: https://www.communiteq.com/discoursehosting/kb/discourse-private-replies-plugin
 # meta_topic_id: 146712
@@ -9,7 +11,7 @@ enabled_site_setting :private_replies_enabled
 
 register_svg_icon "user-secret" if respond_to?(:register_svg_icon)
 
-load File.expand_path('../lib/discourse_private_replies/engine.rb', __FILE__)
+require_relative 'lib/discourse_private_replies/engine.rb'
 
 module ::DiscoursePrivateReplies
   def DiscoursePrivateReplies.can_see_all_posts?(user, topic)
@@ -51,23 +53,32 @@ module ::DiscoursePrivateReplies
     end
     userids = userids + [ topic.user.id ] if topic
     userids = userids + [ user.id ] if user && !user.anonymous? # anonymous users don't have the id method
-    return userids.uniq
+    userids.uniq
+  end
+
+  # Topic ids that have private replies switched on. Reads the values through the
+  # boolean type so that both "t" and "true" are understood.
+  def DiscoursePrivateReplies.protected_topic_ids
+    boolean_type = ActiveModel::Type::Boolean.new
+    TopicCustomField
+      .where(name: 'private_replies')
+      .pluck(:topic_id, :value)
+      .select { |_, value| boolean_type.cast(value) }
+      .map(&:first)
+      .uniq
   end
 end
 
 after_initialize do
 
   # hide posts from the /raw/tid/pid route
-  module ::PostGuardian
-    alias_method :org_can_see_post?, :can_see_post?
-
+  module PrivateRepliesPostGuardian
     def can_see_post?(post)
       return true if is_admin?
 
-      allowed = org_can_see_post?(post)
-      return false unless allowed
+      return false unless super
 
-      if SiteSetting.private_replies_enabled && post.topic&.custom_fields['private_replies']
+      if SiteSetting.private_replies_enabled && post.topic&.custom_fields&.[]('private_replies')
         return true if DiscoursePrivateReplies.can_see_all_posts?(@user, post.topic)
 
         userids = DiscoursePrivateReplies.can_see_post_if_author_among(@user, post.topic)
@@ -78,12 +89,16 @@ after_initialize do
     end
   end
 
+  module ::PostGuardian
+    prepend PrivateRepliesPostGuardian
+  end
+
   # hide posts from the regular topic stream
   module PatchTopicView
 
     def participants
       result = super
-      if SiteSetting.private_replies_enabled && @topic&.custom_fields['private_replies']
+      if SiteSetting.private_replies_enabled && @topic&.custom_fields&.[]('private_replies')
         if !@user || !DiscoursePrivateReplies.can_see_all_posts?(@user, @topic)
           userids = DiscoursePrivateReplies.can_see_post_if_author_among(@user, @topic)
           result.select! { |key, _| userids.include?(key) }
@@ -96,7 +111,7 @@ after_initialize do
     def unfiltered_posts
       result = super
 
-      if SiteSetting.private_replies_enabled && @topic&.custom_fields['private_replies']
+      if SiteSetting.private_replies_enabled && @topic&.custom_fields&.[]('private_replies')
         if !@user || !DiscoursePrivateReplies.can_see_all_posts?(@user, @topic)
           userids = DiscoursePrivateReplies.can_see_post_if_author_among(@user, @topic)
           result = result.where('(posts.post_number = 1 OR posts.user_id IN (?))', userids)
@@ -109,7 +124,7 @@ after_initialize do
     # so we need to filter that separately
     def filter_posts_by_ids(post_ids)
       @posts = super(post_ids)
-      if SiteSetting.private_replies_enabled && @topic&.custom_fields['private_replies']
+      if SiteSetting.private_replies_enabled && @topic&.custom_fields&.[]('private_replies')
         if !@user || !DiscoursePrivateReplies.can_see_all_posts?(@user, @topic)
           userids = DiscoursePrivateReplies.can_see_post_if_author_among(@user, @topic)
           @posts = @posts.where('(posts.post_number = 1 OR posts.user_id IN (?))', userids)
@@ -121,20 +136,20 @@ after_initialize do
 
   module PatchTopicViewDetailsSerializer
     def last_poster
-      if SiteSetting.private_replies_enabled && object.topic&.custom_fields['private_replies']
+      if SiteSetting.private_replies_enabled && object.topic&.custom_fields&.[]('private_replies')
         if !scope.user || !DiscoursePrivateReplies.can_see_all_posts?(scope.user, object.topic)
           userids = DiscoursePrivateReplies.can_see_post_if_author_among(scope.user, object.topic)
-          return object.topic.user unless !userids.include? object.topic.last_poster
+          return object.topic.user unless userids.include?(object.topic.last_poster&.id)
         end
       end
-      object.topic.last_poster
+      super
     end
   end
 
   module PatchTopicPostersSummary
     def initialize(topic, options = {})
       super
-      if SiteSetting.private_replies_enabled && @topic&.custom_fields['private_replies']
+      if SiteSetting.private_replies_enabled && @topic&.custom_fields&.[]('private_replies')
         @filter_userids = DiscoursePrivateReplies.can_see_post_if_author_among(@user, @topic)
       else
         @filter_userids = nil
@@ -158,13 +173,13 @@ after_initialize do
       if SiteSetting.private_replies_enabled && !DiscoursePrivateReplies.can_see_all_posts?(@guardian.user, nil)
         userids = DiscoursePrivateReplies.can_see_post_if_author_among(@guardian.user, nil)
 
-        protected_topics = TopicCustomField.where(:name => 'private_replies').where(:value => true).pluck(:topic_id)
+        protected_topics = DiscoursePrivateReplies.protected_topic_ids
 
         @results.posts.delete_if do |post|
           next false unless protected_topics.include? post.topic_id # leave unprotected topics alone
           next false if userids.include? post.user_id               # show staff and own posts
           next false if post.user_id == post.topic.user_id          # show topic starter posts
-          next false if @guardian.user.id == post.topic.user_id     # show all posts to topic owner
+          next false if @guardian.user&.id == post.topic.user_id    # show all posts to topic owner
           true
         end
       end
@@ -176,15 +191,21 @@ after_initialize do
   # hide posts from user profile -> activity
   class ::UserAction
     module PrivateRepliesApplyCommonFilters
-      def apply_common_filters(builder, user_id, guardian, ignore_private_messages=false)
+      def apply_common_filters(builder, user_id, guardian, ignore_private_messages = false)
         if SiteSetting.private_replies_enabled && !DiscoursePrivateReplies.can_see_all_posts?(guardian.user, nil)
           userids = DiscoursePrivateReplies.can_see_post_if_author_among(guardian.user, nil)
-          userid_list = userids.join(',')
+          userid_list = (userids.presence || [-1]).join(',')
+          viewer_id = guardian.user&.id || -1
+          protected_topic_list = DiscoursePrivateReplies.protected_topic_ids
 
-          protected_topic_list = TopicCustomField.where(:name => 'private_replies').where(:value => true).pluck(:topic_id).join(',')
-
-          if !protected_topic_list.empty?
-            builder.where("( (a.target_topic_id not in (#{protected_topic_list})) OR (a.acting_user_id = t.user_id) OR (a.acting_user_id in (#{userid_list})) )")
+          if protected_topic_list.present?
+            builder.where(<<~SQL)
+              (a.target_topic_id IS NULL OR
+               a.target_topic_id NOT IN (#{protected_topic_list.join(',')}) OR
+               a.acting_user_id = t.user_id OR
+               t.user_id = #{viewer_id} OR
+               a.acting_user_id IN (#{userid_list}))
+            SQL
           end
         end
         super(builder, user_id, guardian, ignore_private_messages)
@@ -194,23 +215,23 @@ after_initialize do
   end
 
   # hide posts from digest and mlm-summary
-  class ::Topic
-    class << self
-      alias_method :original_for_digest_private_replies, :for_digest
-
-      # either the topic is unprotected, or it is the first post number, or it is the user's own topic, or the users posts can be seen
-      # @TODO this does not implement private_replies_topic_starter_primary_group_can_see_all
-      def for_digest(user, since, opts = nil)
-        topics = original_for_digest_private_replies(user, since, opts)
-        # check if we are actually joining on posts, we are for MLM summary but we are not for digest
-        if SiteSetting.private_replies_enabled && !DiscoursePrivateReplies.can_see_all_posts?(user, nil) && topics.to_sql.include?('INNER JOIN "posts"')
-          userid_list = DiscoursePrivateReplies.can_see_post_if_author_among(user, nil).join(',')
-          protected_topic_list = TopicCustomField.where(:name => 'private_replies').where(:value => true).pluck(:topic_id).join(',')
-          topics = topics.where("(topics.id NOT IN (#{protected_topic_list}) OR posts.post_number = 1 OR topics.user_id = #{user.id} OR posts.user_id IN (#{userid_list}))")
-        end
-        topics
+  module PrivateRepliesTopicClassMethods
+    # either the topic is unprotected, or it is the first post number, or it is the user's own topic, or the users posts can be seen
+    # @TODO this does not implement private_replies_topic_starter_primary_group_can_see_all
+    def for_digest(user, since, opts = nil)
+      topics = super
+      # check if we are actually joining on posts, we are for MLM summary but we are not for digest
+      if SiteSetting.private_replies_enabled && !DiscoursePrivateReplies.can_see_all_posts?(user, nil) && topics.to_sql.include?('INNER JOIN "posts"')
+        userid_list = (DiscoursePrivateReplies.can_see_post_if_author_among(user, nil).presence || [-1]).join(',')
+        protected_topic_list = (DiscoursePrivateReplies.protected_topic_ids.presence || [-1]).join(',')
+        topics = topics.where("(topics.id NOT IN (#{protected_topic_list}) OR posts.post_number = 1 OR topics.user_id = #{user&.id || -1} OR posts.user_id IN (#{userid_list}))")
       end
+      topics
     end
+  end
+
+  class ::Topic
+    singleton_class.prepend PrivateRepliesTopicClassMethods
   end
 
   class ::TopicView
@@ -231,20 +252,20 @@ after_initialize do
 
   Topic.register_custom_field_type('private_replies', :boolean)
   add_to_serializer(:topic_view, :private_replies) do
-    !!(object.topic.custom_fields['private_replies'])
+    !!object.topic.custom_fields['private_replies']
   end
 
   add_to_serializer(:topic_view, :private_replies_limited, include_condition: -> { object.topic.custom_fields['private_replies'] }) do
-    !(DiscoursePrivateReplies.can_see_all_posts?(scope&.user, object.topic))
+    !DiscoursePrivateReplies.can_see_all_posts?(scope&.user, object.topic)
   end
 
   Discourse::Application.routes.append do
     mount ::DiscoursePrivateReplies::Engine, at: "/private_replies"
   end
 
-  DiscourseEvent.on(:topic_created) do |topic|
+  on(:topic_created) do |topic|
     if SiteSetting.private_replies_enabled
-      if (SiteSetting.private_replies_on_selected_categories_only == false) || (topic&.category&.custom_fields&.dig('private_replies_enabled'))
+      if (SiteSetting.private_replies_on_selected_categories_only == false) || topic&.category&.custom_fields&.dig('private_replies_enabled')
         if topic&.category&.custom_fields&.dig('private_replies_default_enabled')
           topic.custom_fields['private_replies'] = true
           topic.save_custom_fields
