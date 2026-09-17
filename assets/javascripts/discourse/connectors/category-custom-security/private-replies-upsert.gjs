@@ -74,6 +74,7 @@ export default class PrivateRepliesUpsert extends Component {
                 @title={{i18n "private_replies.private_replies_enabled"}}
                 @onSet={{this.onTogglePrivateRepliesEnabled}}
                 @type="checkbox"
+                @format="max"
                 as |field|
               >
                 <field.Control checked={{this.privateRepliesEnabled}} />
@@ -86,6 +87,7 @@ export default class PrivateRepliesUpsert extends Component {
                 @title={{i18n "private_replies.category_default_enabled"}}
                 @onSet={{this.onTogglePrivateRepliesDefaultEnabled}}
                 @type="checkbox"
+                @format="max"
                 as |field|
               >
                 <field.Control checked={{this.privateRepliesDefaultEnabled}} />
